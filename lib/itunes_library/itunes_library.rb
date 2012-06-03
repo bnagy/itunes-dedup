@@ -29,7 +29,7 @@ class ITunesLibrary < DelegateClass( OpenStruct )
         @db[:tracks]=@db[:tracks].values.map {|h|
             # Change from a file:// URI to a local path. Probably broken if you
             # have stuff on shared disks, the internet etc etc
-            h[:location]=URI.decode URI.parse( h[:location] ).path
+            h[:location]=uri_parser.unescape( URI.parse( h[:location] ).path )
             OpenStruct.new h
         }
         super OpenStruct.new( @db )
@@ -40,6 +40,10 @@ class ITunesLibrary < DelegateClass( OpenStruct )
     end
 
     private
+    	
+    def uri_parser
+      @uri_parser ||= URI.const_defined?(:Parser) ? URI::Parser.new : URI
+    end
 
     # A bit ugly, but it makes the rest of the code nicer.
     def start_of_element? node
