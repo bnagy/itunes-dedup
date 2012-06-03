@@ -1,0 +1,8 @@
+* CHANGES
+* README.md
+* Rakefile
+* bin/itunes-dedup
+* lib/itunes_library.rb
+* lib/itunes_library/itunes_library.rb
+* test/test_itunes_library.rb
+* test/mini.xml
