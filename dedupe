@@ -1,0 +1,140 @@
+#!/usr/bin/env ruby
+
+require 'trollop'
+require 'fileutils'
+require_relative 'itunes_library/itunes_library'
+
+OPTS=Trollop::options {
+    opt :itunes,
+        "iTunes Library File",
+        :type=>:string,
+        :default=>File.expand_path('~/Music/iTunes/iTunes Music Library.xml')
+    opt :dry_run, "Dry run - report which files would be deleted, but don't actually delete",
+        :type=>:boolean
+    opt :fuzzy_seconds,
+        "Maximum difference, in seconds, to consider total_time the same.",
+        :type=>:float,
+        :default=>0.2
+    opt :shrink,
+        "Prefer smaller file versions",
+        :type=>:boolean
+    banner <<-EOS
+
+iTunes Deduper. Default strategy is to prefer highest bitrate.
+
+'deleted' files will be moved to deleted_itunes_tracks in your home directory.
+
+NOTE: This only moves files around - they will still show up in your iTunes
+library until you delete your iTunes Music Library.xml and re-import your music. 
+
+IMPORTANT: This script will probably not work / kill your cat / set your
+computer on fire.  Do not use for any reason.
+
+EOS
+}
+
+DELETE_PATH=File.expand_path( '~/deleted_itunes_tracks' )
+Dir.mkdir( DELETE_PATH ) unless File.directory? DELETE_PATH
+
+def format_track( t )
+   "#{"%.2f" % (t.size / 1024)}KB #{(t.total_time / 1000).divmod(60).map {|i| "%2.2d" % i}.join(':')} @ #{t.bit_rate}kbps -- #{t.album}"
+end
+
+def delete_track( t )
+    return true if OPTS[:dry_run]
+    begin
+        FileUtils.mv t.location, DELETE_PATH
+    rescue Errno::ENOENT
+        warn "(No such file: #{t.location})"
+    end
+    true
+end
+
+puts "="*80
+puts "iTunes Deduper, alpha and dangerous version, (c) Ben Nagy 2012".center( 80 )
+puts "="*80
+
+# Build the library
+puts "Parsing Library. This might take a while."
+library=ITunesLibrary.new OPTS[:itunes]
+"OK. Parsed library with #{library.tracks.size} tracks"
+
+grouped=library.tracks.group_by {|track|
+    "#{track.artist} -- #{track.name}"
+}
+
+# Don't consider entries with a blank artist and a title like "Track 4" - it's
+# just too likely to lead to unwanted collisions.
+dups=grouped.select {|k,v| v.size > 1}.reject {|k,v| k=~/\A -- Track \d+\Z/i}
+dups.each {|k, tracks|
+    puts "#{k}:"
+
+    if OPTS[:shrink]
+        # Only consider files that actually exist...
+        sorted=tracks.select {|t| File.file? t.location}.sort_by(&:size).reverse
+    else
+        sorted=tracks.select {|t| File.file? t.location}.sort_by {|t| [t.bit_rate,t.size] }
+    end
+    next unless sorted.size > 1 # Don't dedupe if there's only one file that exists...
+    pick=sorted.last
+    # Delete dups of any dup, along the way. eg:
+    #
+    # Blondie -- Heart Of Glass:
+	# 1) 4365.00KB 04:36 @ 128kbps -- The Ultimate Eighties: The Album Of The Decade (Disc 1)
+	# 2) 4382.00KB 04:36 @ 128kbps -- 80s Mania: Party Like You're Not That Old!
+	# 3) 6716.00KB 04:10 @ 217kbps -- The Rolling Stone Magazines 500 Greatest Songs Of All Time
+    #
+    # The default pick will be 3), and require a manual choice (unless
+    # fuzzy_seconds is set very high), but we should delete 1) along the way in
+    # any case.
+    keep_tracks=[]
+    until sorted.empty?
+        keeper=sorted.pop
+        sorted.delete_if {|track|
+            if (track.total_time - keeper.total_time).abs <= OPTS[:fuzzy_seconds]*1000 
+                puts "AUTO DELETE: #{format_track track}"
+                delete_track track # also returns true for the delete_if
+            end
+        }
+        keep_tracks.unshift keeper
+    end
+
+    sorted=keep_tracks
+
+    if sorted.size > 1
+        sorted.each.with_index {|t,i|
+            puts"\t#{i+1}) #{format_track t}"
+        }
+        puts "\t[AUTO: #{format_track pick} ]"
+        print "Keep (a)uto (1-9) (b)itrate (s)ize (d)uration or <enter> to skip: "
+        option=gets.chomp
+        case option
+        when /[0-9]/
+            choice=tracks[option.to_i-1]
+            puts "Keeping: #{format_track choice}"
+        when 'a'
+            choice=pick
+            puts "Keeping: #{format_track choice}"
+        when 'b'
+            choice=sorted.sort_by(&:bit_rate).last
+            puts "Keeping: #{format_track choice}"
+        when 's'
+            choice=sorted.sort_by(&:size).last
+            puts "Keeping: #{format_track choice}"
+        when 'd'
+            choice=sorted.sort_by(&:total_time).last
+            puts "Keeping: #{format_track choice}"
+        when ''
+            puts "Skipping..."
+            next
+        else
+            puts "unknown option" and redo
+        end
+
+        sorted.each {|track|
+            delete_track( track ) unless track==choice
+        }
+
+    end
+
+}
