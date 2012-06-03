@@ -8,6 +8,8 @@ require 'uri'
 
 class ITunesLibrary < DelegateClass( OpenStruct )
 
+    VERSION="0.0.1"
+
     def initialize itunes_file
         @db={}
         File.open( itunes_file, 'r' ) {|io|
