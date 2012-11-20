@@ -18,6 +18,13 @@ OPTS=Trollop::options {
     opt :shrink,
         "Prefer smaller file versions",
         :type=>:boolean
+    opt :trash,
+        "Where to move dups",
+        :type=>:string,
+        :default=>File.expand_path( '~/deleted_itunes_tracks' )
+    opt :conservative,
+        "Don't offer the choice menu for dups that differ by more than the limit",
+        :type=>:boolean
     banner <<-EOS
 
 iTunes Deduper. Default strategy is to prefer highest bitrate.
@@ -33,17 +40,21 @@ computer on fire.  Do not use for any reason.
 EOS
 }
 
-DELETE_PATH=File.expand_path( '~/deleted_itunes_tracks' )
-Dir.mkdir( DELETE_PATH ) unless File.directory? DELETE_PATH
+Dir.mkdir( OPTS[:trash] ) unless File.directory? OPTS[:trash]
 
 def format_track( t )
-   "#{"%.2f" % (t.size / 1024)}KB #{(t.total_time / 1000).divmod(60).map {|i| "%2.2d" % i}.join(':')} @ #{t.bit_rate}kbps -- #{t.album}"
+    begin
+        "#{"%.2f" % (t.size / 1024)}KB #{(t.total_time / 1000).divmod(60).map {|i| "%2.2d" % i}.join(':')} @ #{t.bit_rate}kbps -- #{t.album}"
+    rescue
+        "Unable to format track #{t.name rescue '???'} - #{$!}"
+    end
 end
 
 def delete_track( t )
     return true if OPTS[:dry_run]
     begin
-        FileUtils.mv t.location, DELETE_PATH
+        FileUtils.mv t.location, OPTS[:trash]
+        raise if File.file? t.location
     rescue Errno::ENOENT
         warn "(No such file: #{t.location})"
     end
@@ -57,10 +68,11 @@ puts "="*80
 # Build the library
 puts "Parsing Library. This might take a while."
 library=ITunesLibrary.new OPTS[:itunes]
-"OK. Parsed library with #{library.tracks.size} tracks"
+puts "OK. Parsed library with #{library.tracks.size} tracks"
 
 grouped=library.tracks.group_by {|track|
-    "#{track.artist} -- #{track.name}"
+    # Case insensitive artists and track names
+    "#{track.artist.to_s.downcase} -- #{track.name.to_s.downcase}"
 }
 
 # Don't consider entries with a blank artist and a title like "Track 4" - it's
@@ -75,7 +87,9 @@ dups.each {|k, tracks|
     else
         sorted=tracks.select {|t| File.file? t.location}.sort_by {|t| [t.bit_rate,t.size] }
     end
-    next unless sorted.size > 1 # Don't dedupe if there's only one file that exists...
+    unless sorted.size > 1 # Don't dedupe if there's only one file that exists...
+        puts "MISSING: This dup wasn't a dup on disk, only in the iTunes XML."
+    end
     pick=sorted.last
     # Delete dups of any dup, along the way. eg:
     #
@@ -105,6 +119,10 @@ dups.each {|k, tracks|
         sorted.each.with_index {|t,i|
             puts"\t#{i+1}) #{format_track t}"
         }
+        if OPTS[:conservative]
+            puts "CONSERVATIVE: Skipping #{k}."
+            next
+        end
         puts "\t[AUTO: #{format_track pick} ]"
         print "Keep (a)uto (1-9) (b)itrate (s)ize (d)uration or <enter> to skip: "
         option=gets.chomp
@@ -130,11 +148,9 @@ dups.each {|k, tracks|
         else
             puts "unknown option" and redo
         end
-
         sorted.each {|track|
             delete_track( track ) unless track==choice
         }
-
     end
 
 }
